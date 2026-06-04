@@ -31,6 +31,12 @@ model:
     learning_rate: 0.05
     max_depth: 6
     subsample: 0.8
+  lightgbm:
+    n_estimators: 500
+    learning_rate: 0.05
+    max_depth: 6
+    subsample: 0.8
+    verbose: -1
   tuning:
     cv_folds: 5
     param_grid:
@@ -38,6 +44,18 @@ model:
       reg__learning_rate: [0.02, 0.03]
       reg__max_depth: [7, 8, 10]
       reg__l2_regularization: [0.1, 1.0, 5.0]
+
+validation:
+  price_min: 10
+  price_max: 5000
+  valid_conditions:
+    - جديد
+    - مستعمل - ممتاز
+    - مستعمل - جيد
+    - مستعمل - سيئ
+    - Unknown
+  storage_min: 1
+  storage_max: 2048
 
 app:
   server_port: 8501

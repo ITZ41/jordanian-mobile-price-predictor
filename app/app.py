@@ -1,7 +1,19 @@
+"""Streamlit dashboard — Jordanian Mobile Price Predictor.
+
+5 tabs:
+  1. Price Estimate  — Predict price, confidence interval, deal score, similar listings
+  2. Market Analysis  — Interactive Plotly charts
+  3. Trade-In Calculator — Upgrade options
+  4. Brand Comparison — Side-by-side brand analysis
+  5. My Listing Analyzer — Paste raw Arabic title, auto-extract + predict
+"""
+
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,6 +22,7 @@ import joblib
 import plotly.express as px
 
 from src.paths import MODEL_PATH, METRICS_PATH, CLEANED_DATA_PATH
+from src.cleaning import extract_series, normalize_condition, normalize_arabic, extract_storage_gb
 
 # ── Translations ──
 TRANSLATIONS = {
@@ -61,6 +74,24 @@ TRANSLATIONS = {
         "all_listings": "All Listings",
         "no_listings": "No listings found for this brand and series.",
         "select_overview": "Select a brand and series to see market overview.",
+        # New strings for tab 5
+        "analyzer_title": "🔍 My Listing Analyzer",
+        "analyzer_desc": "Paste a raw Arabic listing title and the app will automatically extract brand, series, storage, and condition — then predict the price.",
+        "analyzer_input_label": "Paste listing title (Arabic)",
+        "analyzer_input_placeholder": "مثال: ايفون 15 برو ماكس 256 مستعمل ممتاز بدل",
+        "analyzer_analyze_btn": "Analyze Listing",
+        "analyzer_extracted": "Extracted Information",
+        "analyzer_brand": "Brand",
+        "analyzer_series": "Series",
+        "analyzer_storage": "Storage",
+        "analyzer_condition": "Condition",
+        "analyzer_predicted": "Predicted Price",
+        "analyzer_range": "Price Range",
+        "analyzer_deal": "Deal Score",
+        "analyzer_no_title": "Please enter a listing title to analyze.",
+        "similar_listings": "Similar Listings",
+        "no_similar": "No similar listings found in dataset.",
+        "confidence_interval": "Confidence Interval",
     },
     "ar": {
         "title": "📈 محرك أسعار الهواتف",
@@ -110,6 +141,23 @@ TRANSLATIONS = {
         "all_listings": "جميع الإعلانات",
         "no_listings": "لم يتم العثور على إعلانات لهذه العلامة والفئة.",
         "select_overview": "اختر علامة وفئة لرؤية نظره عامه على السوق.",
+        "analyzer_title": "🔍 محلل الإعلانات",
+        "analyzer_desc": "الصق عنوان إعلان عربي وسيقوم التطبيق تلقائياً باستخراج العلامة والفئة والتخزين والحالة — ثم التنبؤ بالسعر.",
+        "analyzer_input_label": "الصق عنوان الإعلان (عربي)",
+        "analyzer_input_placeholder": "مثال: ايفون 15 برو ماكس 256 مستعمل ممتاز بدل",
+        "analyzer_analyze_btn": "حلل الإعلان",
+        "analyzer_extracted": "المعلومات المستخرجة",
+        "analyzer_brand": "العلامة",
+        "analyzer_series": "الفئة",
+        "analyzer_storage": "التخزين",
+        "analyzer_condition": "الحالة",
+        "analyzer_predicted": "السعر المتنبأ",
+        "analyzer_range": "نطاق السعر",
+        "analyzer_deal": "معدل الصفقة",
+        "analyzer_no_title": "الرجاء إدخال عنوان إعلان للتحليل.",
+        "similar_listings": "إعلانات مشابهة",
+        "no_similar": "لم يتم العثور على إعلانات مشابهة في البيانات.",
+        "confidence_interval": "فترة الثقة",
     },
 }
 
@@ -117,10 +165,11 @@ TRANSLATIONS = {
 def t(key, lang):
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, key)
 
+
 st.set_page_config(
     page_title="Mobile Price Engine | Jordan",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
 )
 
 # --- UI STYLING (DARK THEME) ---
@@ -199,6 +248,14 @@ st.markdown("""
         background-position: right center;
         color: #fff;
     }
+
+    .confidence-bar {
+        background: linear-gradient(to right, #1a3a1a, #3FB950, #D29922, #F85149);
+        height: 8px;
+        border-radius: 4px;
+        margin: 0.5rem 0;
+        position: relative;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -226,8 +283,8 @@ def load_data():
     if not CLEANED_DATA_PATH.exists():
         return None
     df = pd.read_csv(CLEANED_DATA_PATH)
-    df['brand'] = df['brand'].fillna("Other").astype(str)
-    df['series'] = df['series'].fillna("Other").astype(str)
+    df["brand"] = df["brand"].fillna("Other").astype(str)
+    df["series"] = df["series"].fillna("Other").astype(str)
     return df
 
 
@@ -250,14 +307,14 @@ def _predict(model, brand, series, storage, condition, phone_age_months=0,
         title_parts.append("كرتون مسكر")
 
     input_df = pd.DataFrame([{
-        'title': " ".join(title_parts),
-        'brand': brand,
-        'series': series,
-        'storage_gb': storage,
-        'phone_age_months': phone_age_months,
-        'condition': condition,
-        'model_name': f"{brand} {series}",
-        'color_actual': 'Unknown'
+        "title": " ".join(title_parts),
+        "brand": brand,
+        "series": series,
+        "storage_gb": storage,
+        "phone_age_months": phone_age_months,
+        "condition": condition,
+        "model_name": f"{brand} {series}",
+        "color_actual": "Unknown",
     }])
 
     prediction = np.expm1(model.predict(input_df)[0])
@@ -266,9 +323,35 @@ def _predict(model, brand, series, storage, condition, phone_age_months=0,
     return prediction
 
 
+def _find_similar_listings(df, brand, series, condition, prediction, n=5):
+    """Find the N closest real listings by brand + series + condition."""
+    mask = (df["brand"] == brand) & (df["series"] == series)
+    if condition in df["condition"].unique():
+        mask = mask & (df["condition"] == condition)
+    similar = df[mask].copy()
+    if similar.empty:
+        # Fallback: just brand + series
+        similar = df[(df["brand"] == brand) & (df["series"] == series)].copy()
+    if similar.empty or prediction is None:
+        return similar.head(0)
+    similar["price_diff"] = abs(similar["price_jd"] - prediction)
+    similar = similar.sort_values("price_diff").head(n)
+    return similar[["title", "price_jd", "condition", "storage_gb"]]
+
+
 def main():
-    # Language toggle
-    lang = st.sidebar.selectbox("🌐 Language / اللغة", ["en", "ar"], format_func=lambda x: "English" if x == "en" else "العربية")
+    # Language toggle — stored in session state for persistence
+    if "lang" not in st.session_state:
+        st.session_state["lang"] = "en"
+
+    lang = st.sidebar.selectbox(
+        "🌐 Language / اللغة",
+        ["en", "ar"],
+        index=0 if st.session_state["lang"] == "en" else 1,
+        format_func=lambda x: "English" if x == "en" else "العربية",
+        key="lang_selector",
+    )
+    st.session_state["lang"] = lang
 
     st.title(t("title", lang))
     st.markdown(f"<p style='color: #8B949E;'>{t('subtitle', lang)}</p>", unsafe_allow_html=True)
@@ -288,27 +371,36 @@ def main():
     with st.sidebar:
         st.header(t("device_specs", lang))
 
-        brand = st.selectbox(t("brand", lang), sorted(df['brand'].unique()))
+        brand = st.selectbox(t("brand", lang), sorted(df["brand"].unique()))
 
-        brand_df = df[df['brand'] == brand]
-        series_counts = brand_df['series'].value_counts()
+        brand_df = df[df["brand"] == brand]
+        series_counts = brand_df["series"].value_counts()
         available_series = sorted(series_counts[series_counts >= 5].index)
         series = st.selectbox(t("series", lang), available_series)
 
-        storage = st.select_slider(t("storage", lang), options=["All", 32, 64, 128, 256, 512, 1024], value="All")
+        storage = st.select_slider(
+            t("storage", lang),
+            options=["All", 32, 64, 128, 256, 512, 1024],
+            value="All",
+        )
 
-        condition = st.selectbox(t("condition", lang), ['جديد', 'مستعمل - ممتاز', 'مستعمل - جيد', 'مستعمل - سيئ'])
+        condition = st.selectbox(
+            t("condition", lang),
+            ["جديد", "مستعمل - ممتاز", "مستعمل - جيد", "مستعمل - سيئ"],
+        )
 
         st.markdown("---")
         st.subheader(t("asking_price", lang))
-        asking_price = st.number_input(t("seller_price", lang), min_value=0, max_value=2000, value=0, step=10,
-                                       help="Enter the seller's asking price to get a Deal Score")
+        asking_price = st.number_input(
+            t("seller_price", lang),
+            min_value=0, max_value=2000, value=0, step=10,
+            help="Enter the seller's asking price to get a Deal Score",
+        )
 
         st.subheader(t("premium_features", lang))
-
-        is_pro = st.checkbox("Pro / برو") if 'apple' in brand.lower() or 'huawei' in brand.lower() else False
-        is_max = st.checkbox("Max / ماكس") if 'apple' in brand.lower() else False
-        is_ultra = st.checkbox("Ultra / الترا") if 'samsung' in brand.lower() or 'xiaomi' in brand.lower() else False
+        is_pro = st.checkbox("Pro / برو") if "apple" in brand.lower() or "huawei" in brand.lower() else False
+        is_max = st.checkbox("Max / ماكس") if "apple" in brand.lower() else False
+        is_ultra = st.checkbox("Ultra / الترا") if "samsung" in brand.lower() or "xiaomi" in brand.lower() else False
         is_plus = st.checkbox("Plus / بلس")
 
         st.subheader(t("device_attributes", lang))
@@ -319,14 +411,19 @@ def main():
         predict_btn = st.button(t("calculate", lang))
 
     # --- MAIN CONTENT ---
-    tab1, tab2, tab3, tab4 = st.tabs(["💰 Price Estimate", "📊 Market Analysis", "🔄 Trade-In Calculator", "⚖️ Brand Comparison"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "💰 Price Estimate", "📊 Market Analysis",
+        "🔄 Trade-In Calculator", "⚖️ Brand Comparison",
+        "🔍 " + t("analyzer_title", lang),
+    ])
 
-    # ── TAB 1: Price Estimate ──
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 1: Price Estimate
+    # ═══════════════════════════════════════════════════════════════
     with tab1:
-        series_listings = df[(df['brand'] == brand) & (df['series'] == series)]
+        series_listings = df[(df["brand"] == brand) & (df["series"] == series)]
 
         def _show_market_overview():
-            """Render market overview when storage == 'All'."""
             if series_listings.empty:
                 st.info(t("no_listings", lang))
                 return
@@ -355,38 +452,47 @@ def main():
                 """, unsafe_allow_html=True)
 
             st.markdown("#### " + t("price_by_storage", lang))
-            breakdown = series_listings.groupby(['storage_gb', 'condition']).agg(
-                avg_price=('price_jd', 'mean'),
-                min_price=('price_jd', 'min'),
-                max_price=('price_jd', 'max'),
-                count=('price_jd', 'count')
+            breakdown = series_listings.groupby(["storage_gb", "condition"]).agg(
+                avg_price=("price_jd", "mean"),
+                min_price=("price_jd", "min"),
+                max_price=("price_jd", "max"),
+                count=("price_jd", "count"),
             ).reset_index()
-            breakdown = breakdown[breakdown['count'] >= 2].sort_values(['storage_gb', 'avg_price'], ascending=[True, False])
+            breakdown = breakdown[breakdown["count"] >= 2].sort_values(
+                ["storage_gb", "avg_price"], ascending=[True, False]
+            )
             if not breakdown.empty:
                 cols_renamed = {
-                    'storage_gb': t('storage', lang),
-                    'condition': t('condition', lang),
-                    'avg_price': f"{t('avg_price', lang).split()[0]} (JOD)",
-                    'min_price': 'Min (JOD)',
-                    'max_price': 'Max (JOD)',
-                    'count': t('listings_count', lang),
+                    "storage_gb": t("storage", lang),
+                    "condition": t("condition", lang),
+                    "avg_price": f"{t('avg_price', lang).split()[0]} (JOD)",
+                    "min_price": "Min (JOD)",
+                    "max_price": "Max (JOD)",
+                    "count": t("listings_count", lang),
                 }
-                st.dataframe(breakdown.rename(columns=cols_renamed).round(0), width='stretch', hide_index=True)
-
+                st.dataframe(
+                    breakdown.rename(columns=cols_renamed).round(0),
+                    width="stretch", hide_index=True,
+                )
             st.markdown("#### " + t("all_listings", lang))
-            st.dataframe(series_listings[['title', 'price_jd', 'condition', 'storage_gb']].sort_values('price_jd'), width='stretch', hide_index=True)
+            st.dataframe(
+                series_listings[["title", "price_jd", "condition", "storage_gb"]].sort_values("price_jd"),
+                width="stretch", hide_index=True,
+            )
 
         if storage == "All":
             _show_market_overview()
         elif predict_btn:
-            # Specific storage selected — run prediction
-            try:
-                prediction = _predict(model, brand, series, storage, condition,
-                                      is_pro=is_pro, is_max=is_max, is_ultra=is_ultra,
-                                      is_plus=is_plus, has_warranty=has_warranty, is_sealed=is_sealed)
-            except Exception as e:
-                st.error(f"Prediction failed: {e}. Please check that the model is compatible with your inputs.")
-                return
+            with st.spinner("Predicting..."):
+                try:
+                    prediction = _predict(
+                        model, brand, series, storage, condition,
+                        is_pro=is_pro, is_max=is_max, is_ultra=is_ultra,
+                        is_plus=is_plus, has_warranty=has_warranty, is_sealed=is_sealed,
+                    )
+                except Exception as e:
+                    st.error(f"Prediction failed: {e}. Please check that the model is compatible with your inputs.")
+                    return
 
             if prediction is None:
                 st.warning("The model returned an invalid prediction for these inputs. Try different specifications.")
@@ -407,10 +513,23 @@ def main():
             with col_range:
                 lower = prediction - mae
                 upper = prediction + mae
+                # Confidence interval bar visualization
                 st.markdown(f"""
                     <div class='metric-card'>
-                        <h3>Typical Price Range (68% confidence)</h3>
-                        <p style='font-size: 1.8rem; font-weight: 700;'>{lower:,.0f} – {upper:,.0f} <span style='font-size: 1rem; color: #58A6FF;'>JOD</span></p>
+                        <h3>{t('confidence_interval', lang)}</h3>
+                        <p style='font-size: 1.1rem; color: #8B949E;'>{lower:,.0f} JOD</p>
+                        <div style='background: linear-gradient(to right, #58A6FF, #F0F6FC, #58A6FF);
+                                    height: 6px; border-radius: 3px; margin: 0.3rem 0; position: relative;'>
+                            <div style='position: absolute; left: 50%; top: -4px;
+                                        width: 2px; height: 14px; background: #F0F6FC;'></div>
+                        </div>
+                        <p style='font-size: 1.8rem; font-weight: 700; text-align: center;'>
+                            {prediction:,.0f} <span style='font-size: 1rem; color: #58A6FF;'>JOD</span>
+                        </p>
+                        <p style='font-size: 1.1rem; color: #8B949E; text-align: right;'>{upper:,.0f} JOD</p>
+                        <p style='font-size: 0.85rem; color: #8B949E; text-align: center; margin-top: 0.3rem;'>
+                            ±{mae:,.0f} JOD (model MAE)
+                        </p>
                     </div>
                 """, unsafe_allow_html=True)
 
@@ -444,51 +563,48 @@ def main():
                         </div>
                     """, unsafe_allow_html=True)
 
-            st.subheader("Comparable Listings")
-            comparable = df[
-                (df['brand'] == brand) &
-                (df['series'] == series) &
-                (df['price_jd'].between(prediction * 0.8, prediction * 1.2))
-            ].head(10)
-
-            if not comparable.empty:
-                st.dataframe(comparable[['title', 'price_jd', 'condition', 'storage_gb']], width='stretch')
+            # Similar Listings
+            st.subheader(t("similar_listings", lang))
+            similar = _find_similar_listings(df, brand, series, condition, prediction)
+            if not similar.empty:
+                st.dataframe(similar, width="stretch")
             else:
-                st.info("No direct comparable listings found in this price range.")
+                st.info(t("no_similar", lang))
         else:
             st.info(t("adjust_sidebar", lang))
 
-    # ── TAB 2: Market Analysis ──
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 2: Market Analysis
+    # ═══════════════════════════════════════════════════════════════
     with tab2:
         st.subheader(f"Market Trends: {brand}")
-        brand_df = df[df['brand'] == brand]
+        brand_df = df[df["brand"] == brand]
 
         col1, col2 = st.columns(2)
-
         with col1:
-            st.markdown("#### Listings by Series")
-            series_counts_plot = brand_df['series'].value_counts().reset_index()
-            fig_series = px.bar(series_counts_plot, x='series', y='count', color='series', template="plotly_dark")
-            st.plotly_chart(fig_series, width='stretch')
-
+            st.markdown("#### " + t("listings_by_series", lang))
+            series_counts_plot = brand_df["series"].value_counts().reset_index()
+            fig_series = px.bar(series_counts_plot, x="series", y="count", color="series", template="plotly_dark")
+            st.plotly_chart(fig_series, width="stretch")
         with col2:
-            st.markdown("#### Price Distribution")
-            fig_dist = px.histogram(brand_df, x='price_jd', nbins=30, template="plotly_dark", color_discrete_sequence=['#58A6FF'])
-            st.plotly_chart(fig_dist, width='stretch')
+            st.markdown("#### " + t("price_dist", lang))
+            fig_dist = px.histogram(brand_df, x="price_jd", nbins=30, template="plotly_dark", color_discrete_sequence=["#58A6FF"])
+            st.plotly_chart(fig_dist, width="stretch")
 
-        st.markdown("#### Price Range by Condition")
-        fig_box = px.box(brand_df, x='condition', y='price_jd', color='condition', template="plotly_dark")
-        st.plotly_chart(fig_box, width='stretch')
+        st.markdown("#### " + t("price_by_condition", lang))
+        fig_box = px.box(brand_df, x="condition", y="price_jd", color="condition", template="plotly_dark")
+        st.plotly_chart(fig_box, width="stretch")
 
-    # ── TAB 3: Trade-In Calculator ──
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 3: Trade-In Calculator
+    # ═══════════════════════════════════════════════════════════════
     with tab3:
         st.subheader(t("trade_in_title", lang))
         st.markdown(t("trade_in_desc", lang))
 
         has_current_phone = st.checkbox(
             "I have a phone to trade in" if lang == "en" else "عندي هاتف للمقايضة",
-            value=True,
-            key="has_current_phone"
+            value=True, key="has_current_phone",
         )
 
         cur_value = 0.0
@@ -497,52 +613,55 @@ def main():
 
         if has_current_phone:
             col_current, col_budget = st.columns(2)
-
             with col_current:
                 st.markdown("#### " + ("Your Current Phone" if lang == "en" else "هاتفك الحالي"))
                 cur_brand = st.selectbox(
                     "Current Brand" if lang == "en" else "العلامة الحالية",
-                    sorted(df['brand'].unique()), key="cur_brand"
+                    sorted(df["brand"].unique()), key="cur_brand",
                 )
-                cur_brand_df = df[df['brand'] == cur_brand]
-                cur_series_counts = cur_brand_df['series'].value_counts()
+                cur_brand_df = df[df["brand"] == cur_brand]
+                cur_series_counts = cur_brand_df["series"].value_counts()
                 cur_available = sorted(cur_series_counts[cur_series_counts >= 5].index)
                 cur_series = st.selectbox(
                     "Current Series" if lang == "en" else "الفئة الحالية",
-                    cur_available, key="cur_series"
+                    cur_available, key="cur_series",
                 )
                 cur_storage = st.select_slider(
                     "Current Storage" if lang == "en" else "سعة التخزين الحالية",
-                    options=[32, 64, 128, 256, 512, 1024], value=128, key="cur_storage"
+                    options=[32, 64, 128, 256, 512, 1024], value=128, key="cur_storage",
                 )
                 cur_condition = st.selectbox(
                     "Current Condition" if lang == "en" else "الحالة الحالية",
-                    ['مستعمل - ممتاز', 'مستعمل - جيد', 'مستعمل - سيئ'], key="cur_cond"
+                    ["مستعمل - ممتاز", "مستعمل - جيد", "مستعمل - سيئ"], key="cur_cond",
                 )
-
             with col_budget:
-                st.markdown("#### " + (t("upgrade_budget", lang)))
+                st.markdown("#### " + t("upgrade_budget", lang))
                 extra_budget = st.number_input(
                     t("extra_budget", lang),
-                    min_value=0, max_value=3000, value=300, step=50
+                    min_value=0, max_value=3000, value=300, step=50,
                 )
         else:
             extra_budget = st.number_input(
                 t("extra_budget", lang),
-                min_value=0, max_value=3000, value=500, step=50
+                min_value=0, max_value=3000, value=500, step=50,
             )
 
         calc_label = t("calc_trade", lang)
         if st.button(calc_label, key="trade_in_btn"):
-            if has_current_phone:
-                try:
-                    cur_value = _predict(model, cur_brand, cur_series, cur_storage, cur_condition)
-                except Exception:
-                    cur_value = None
+            with st.spinner("Calculating..."):
+                if has_current_phone:
+                    try:
+                        cur_value = _predict(model, cur_brand, cur_series, cur_storage, cur_condition)
+                    except Exception:
+                        cur_value = None
 
-                if cur_value is None:
-                    st.error("Cannot estimate your current phone's value. Try different specs." if lang == "en" else "لا يمكن تقدير قيمة هاتفك. جرب مواصفات مختلفة.")
-                    return
+                    if cur_value is None:
+                        st.error(
+                            "Cannot estimate your current phone's value. Try different specs."
+                            if lang == "en"
+                            else "لا يمكن تقدير قيمة هاتفك. جرب مواصفات مختلفة."
+                        )
+                        return
 
             total_budget = cur_value + extra_budget
 
@@ -562,58 +681,57 @@ def main():
                     </div>
                 """, unsafe_allow_html=True)
 
-            # Find options within budget
-            upgrade_pool = df[df['price_jd'] <= total_budget]
+            upgrade_pool = df[df["price_jd"] <= total_budget]
             if has_current_phone and cur_brand and cur_series:
                 upgrade_pool = upgrade_pool[
-                    ~((upgrade_pool['brand'] == cur_brand) & (upgrade_pool['series'] == cur_series))
+                    ~((upgrade_pool["brand"] == cur_brand) & (upgrade_pool["series"] == cur_series))
                 ]
-                upgrade_pool = upgrade_pool[upgrade_pool['price_jd'] > cur_value * 0.8]
+                upgrade_pool = upgrade_pool[upgrade_pool["price_jd"] > cur_value * 0.8]
 
             if not upgrade_pool.empty:
-                top_upgrades = upgrade_pool.groupby(['brand', 'series']).agg(
-                    avg_price=('price_jd', 'mean'),
-                    count=('price_jd', 'count')
+                top_upgrades = upgrade_pool.groupby(["brand", "series"]).agg(
+                    avg_price=("price_jd", "mean"),
+                    count=("price_jd", "count"),
                 ).reset_index()
-                top_upgrades = top_upgrades[top_upgrades['count'] >= 3].sort_values('avg_price', ascending=False).head(10)
+                top_upgrades = top_upgrades[top_upgrades["count"] >= 3].sort_values("avg_price", ascending=False).head(10)
                 st.markdown("#### " + t("upgrade_options", lang))
                 st.dataframe(top_upgrades.rename(columns={
-                    'brand': 'Brand', 'series': 'Series',
-                    'avg_price': 'Avg Price (JOD)', 'count': 'Listings'
-                }), width='stretch', hide_index=True)
+                    "brand": "Brand", "series": "Series",
+                    "avg_price": "Avg Price (JOD)", "count": "Listings",
+                }), width="stretch", hide_index=True)
             else:
                 st.info(t("no_upgrades", lang))
 
-    # ── TAB 4: Brand Comparison ──
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 4: Brand Comparison
+    # ═══════════════════════════════════════════════════════════════
     with tab4:
         st.subheader("⚖️ Brand Value Comparison")
         st.markdown("Compare how different brands hold their value in the Jordanian market.")
 
         col_a, col_b = st.columns(2)
-
         with col_a:
-            brand_a = st.selectbox("Brand A", sorted(df['brand'].unique()), key="brand_a")
-            df_a = df[df['brand'] == brand_a]
-
+            brand_a = st.selectbox("Brand A", sorted(df["brand"].unique()), key="brand_a")
+            df_a = df[df["brand"] == brand_a]
         with col_b:
-            brand_b = st.selectbox("Brand B", sorted(df['brand'].unique()), index=1, key="brand_b")
-            df_b = df[df['brand'] == brand_b]
+            brand_b = st.selectbox("Brand B", sorted(df["brand"].unique()), index=1, key="brand_b")
+            df_b = df[df["brand"] == brand_b]
 
         if st.button("Compare Brands", key="compare_btn"):
-            col_stat_a, col_stat_b = st.columns(2)
-
-            stats_a = {
-                'listings': len(df_a),
-                'avg_price': df_a['price_jd'].mean(),
-                'median_price': df_a['price_jd'].median(),
-                'pct_new': (df_a['condition'] == 'جديد').mean() * 100 if 'condition' in df_a.columns else 0,
-            }
-            stats_b = {
-                'listings': len(df_b),
-                'avg_price': df_b['price_jd'].mean(),
-                'median_price': df_b['price_jd'].median(),
-                'pct_new': (df_b['condition'] == 'جديد').mean() * 100 if 'condition' in df_b.columns else 0,
-            }
+            with st.spinner("Comparing..."):
+                col_stat_a, col_stat_b = st.columns(2)
+                stats_a = {
+                    "listings": len(df_a),
+                    "avg_price": df_a["price_jd"].mean(),
+                    "median_price": df_a["price_jd"].median(),
+                    "pct_new": (df_a["condition"] == "جديد").mean() * 100 if "condition" in df_a.columns else 0,
+                }
+                stats_b = {
+                    "listings": len(df_b),
+                    "avg_price": df_b["price_jd"].mean(),
+                    "median_price": df_b["price_jd"].median(),
+                    "pct_new": (df_b["condition"] == "جديد").mean() * 100 if "condition" in df_b.columns else 0,
+                }
 
             with col_stat_a:
                 st.markdown(f"""
@@ -623,7 +741,6 @@ def main():
                         <p style='color: #8B949E;'>{stats_a['listings']} listings | {stats_a['pct_new']:.0f}% new</p>
                     </div>
                 """, unsafe_allow_html=True)
-
             with col_stat_b:
                 st.markdown(f"""
                     <div class='metric-card'>
@@ -633,16 +750,169 @@ def main():
                     </div>
                 """, unsafe_allow_html=True)
 
-            # Condition price comparison
             compare_df = pd.concat([
-                df_a[['condition', 'price_jd']].assign(brand=brand_a),
-                df_b[['condition', 'price_jd']].assign(brand=brand_b),
+                df_a[["condition", "price_jd"]].assign(brand=brand_a),
+                df_b[["condition", "price_jd"]].assign(brand=brand_b),
             ])
             fig_compare = px.box(
-                compare_df, x='condition', y='price_jd', color='brand',
-                template="plotly_dark", title="Price Distribution by Condition"
+                compare_df, x="condition", y="price_jd", color="brand",
+                template="plotly_dark", title="Price Distribution by Condition",
             )
-            st.plotly_chart(fig_compare, width='stretch')
+            st.plotly_chart(fig_compare, width="stretch")
+
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 5: My Listing Analyzer
+    # ═══════════════════════════════════════════════════════════════
+    with tab5:
+        st.subheader(t("analyzer_title", lang))
+        st.markdown(t("analyzer_desc", lang))
+
+        raw_title = st.text_input(
+            t("analyzer_input_label", lang),
+            placeholder=t("analyzer_input_placeholder", lang),
+            key="analyzer_input",
+        )
+
+        analyzer_asking = st.number_input(
+            t("seller_price", lang),
+            min_value=0, max_value=2000, value=0, step=10,
+            key="analyzer_asking",
+            help="Optional: enter asking price for deal score",
+        )
+
+        if st.button(t("analyzer_analyze_btn", lang), key="analyzer_btn"):
+            if not raw_title.strip():
+                st.warning(t("analyzer_no_title", lang))
+            else:
+                with st.spinner("Analyzing..."):
+                    # Step 1: Extract brand from title
+                    normalized = normalize_arabic(raw_title)
+                    detected_brand = "Other"
+                    brand_patterns = [
+                        (r"ايفون|iphone|apple|ابل", "Apple"),
+                        (r"سامسونج|samsung|جالاكسي", "Samsung"),
+                        (r"شاومي|xiaomi|ريدمي|بوكو", "Xiaomi"),
+                        (r"هواوي|huawei", "Huawei"),
+                        (r"هونور|honor", "Honor"),
+                        (r"اوبو|oppo", "OPPO"),
+                        (r"تكنو|tecno", "Tecno"),
+                        (r"انفينيكس|infinix", "Infinix"),
+                        (r"نوكيا|nokia", "Nokia"),
+                        (r"ريلمي|realme", "Realme"),
+                        (r"فيفو|vivo", "Vivo"),
+                        (r"جوجل|google|بيكسل|pixel", "Google"),
+                        (r"ون\s*بلس|oneplus", "OnePlus"),
+                    ]
+                    for pattern, bname in brand_patterns:
+                        if re.search(pattern, normalized):
+                            detected_brand = bname
+                            break
+
+                    # Step 2: Extract series
+                    detected_series = extract_series(raw_title, detected_brand)
+
+                    # Step 3: Extract storage
+                    detected_storage = extract_storage_gb("", raw_title)
+                    if detected_storage is None:
+                        detected_storage = 128  # default
+
+                    # Step 4: Extract condition
+                    detected_condition = normalize_condition(raw_title)
+                    if detected_condition == "Unknown":
+                        detected_condition = "مستعمل - ممتاز"  # default
+
+                # Display extracted info
+                st.markdown("### " + t("analyzer_extracted", lang))
+                col_b, col_s, col_st, col_c = st.columns(4)
+                with col_b:
+                    st.markdown(f"""
+                        <div class='metric-card'>
+                            <h3>{t('analyzer_brand', lang)}</h3>
+                            <p style='font-size: 1.5rem; font-weight: 700;'>{detected_brand}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_s:
+                    st.markdown(f"""
+                        <div class='metric-card'>
+                            <h3>{t('analyzer_series', lang)}</h3>
+                            <p style='font-size: 1.2rem; font-weight: 700; font-size: 0.95rem;'>{detected_series}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_st:
+                    st.markdown(f"""
+                        <div class='metric-card'>
+                            <h3>{t('analyzer_storage', lang)}</h3>
+                            <p style='font-size: 1.5rem; font-weight: 700;'>{detected_storage} GB</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_c:
+                    st.markdown(f"""
+                        <div class='metric-card'>
+                            <h3>{t('analyzer_condition', lang)}</h3>
+                            <p style='font-size: 1.2rem; font-weight: 700;'>{detected_condition}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                # Predict
+                with st.spinner("Predicting price..."):
+                    try:
+                        pred = _predict(model, detected_brand, detected_series, detected_storage, detected_condition)
+                    except Exception as e:
+                        pred = None
+                        st.error(f"Prediction failed: {e}")
+
+                if pred is not None:
+                    mae = metrics["mae"]
+                    st.markdown("### " + t("analyzer_predicted", lang))
+                    col_p, col_r = st.columns(2)
+                    with col_p:
+                        st.markdown(f"""
+                            <div class='metric-card'>
+                                <h3>{t('analyzer_predicted', lang)}</h3>
+                                <p class='prediction-value'>{pred:,.0f}<span class='currency'>JOD</span></p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    with col_r:
+                        st.markdown(f"""
+                            <div class='metric-card'>
+                                <h3>{t('analyzer_range', lang)}</h3>
+                                <p style='font-size: 1.8rem; font-weight: 700;'>
+                                    {pred - mae:,.0f} – {pred + mae:,.0f}
+                                    <span style='font-size: 1rem; color: #58A6FF;'>JOD</span>
+                                </p>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                    # Deal score
+                    if analyzer_asking > 0:
+                        deal_score = (pred - analyzer_asking) / pred * 100
+                        if deal_score > 10:
+                            label = "🔥 Great Deal"
+                            color = "#3FB950"
+                        elif deal_score > 0:
+                            label = "👍 Fair Price"
+                            color = "#D29922"
+                        elif deal_score > -10:
+                            label = "⚠️ Slightly Overpriced"
+                            color = "#F85149"
+                        else:
+                            label = "🚨 Overpriced"
+                            color = "#F85149"
+                        st.markdown(f"""
+                            <div class='metric-card'>
+                                <h3>{t('analyzer_deal', lang)}</h3>
+                                <p style='font-size: 1.8rem; font-weight: 700; color: {color};'>{deal_score:+.0f}%</p>
+                                <p style='color: {color}; font-weight: 600;'>{label}</p>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                    # Similar listings
+                    st.markdown("#### " + t("similar_listings", lang))
+                    similar = _find_similar_listings(df, detected_brand, detected_series, detected_condition, pred)
+                    if not similar.empty:
+                        st.dataframe(similar, width="stretch")
+                    else:
+                        st.info(t("no_similar", lang))
 
 
 if __name__ == "__main__":

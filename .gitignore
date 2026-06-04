@@ -36,6 +36,8 @@ Desktop.ini
 # Models — regenerate with: python src/train_model.py
 models/*.joblib
 models/metrics.json
+models/feature_importance.json
+models/experiment_log.jsonl
 
 # Data — raw data is large and contains Arabic filenames
 data/raw/
