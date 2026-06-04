@@ -32,26 +32,7 @@ A production-grade ML pipeline that scrapes Arabic listings from Jordanian marke
 | iPhone 13 128GB | مستعمل - ممتاز | ~480 JOD | 480 JOD |
 | Redmi Note 13 256GB | مستعمل - ممتاز | ~195 JOD | 195 JOD |
 
----
 
-## Screenshots
-
-### Price Estimate Tab
-![Dashboard Price Estimate](docs/screenshots/dashboard_price.png)
-
-### Market Analysis Tab
-![Market Analysis](docs/screenshots/dashboard_market.png)
-
-### Trade-In Calculator
-![Trade-In Calculator](docs/screenshots/dashboard_tradein.png)
-
-### Brand Comparison
-![Brand Comparison](docs/screenshots/dashboard_compare.png)
-
-### My Listing Analyzer (New)
-![Listing Analyzer](docs/screenshots/dashboard_analyzer.png)
-
----
 
 ## How It Works
 
