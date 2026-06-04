@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Lint / test caches
+.pytest_cache/
+.ruff_cache/
+
+# Models — regenerate with: python src/train_model.py
+models/*.joblib
+models/metrics.json
+
+# Data — raw data is large and contains Arabic filenames
+data/raw/
+data/processed/features.csv
+
+# Reports — regenerate with: python src/analysis.py && python src/generate_report.py
+reports/figures/
+reports/summary_report.txt
+
+# Temp
+*~

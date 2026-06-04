@@ -1,0 +1,48 @@
+# Jordanian Mobile Price Predictor — Configuration
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cleaned_file: cleaned_data.csv
+  features_file: features.csv
+
+cleaning:
+  min_price_jd: 40
+  max_price_jd: 1500
+  rare_brand_threshold: 5
+  rare_series_threshold: 5
+  delivery_keyword: "خدمة التوصيل"
+  telecom_operators:
+    - زين
+    - اورانج
+    - امنية
+  condition_as_brand:
+    - جديد
+    - مستعمل
+
+model:
+  hist_gradient_boosting:
+    max_iter: 400
+    learning_rate: 0.03
+    max_depth: 8
+    l2_regularization: 1.0
+  xgboost:
+    n_estimators: 500
+    learning_rate: 0.05
+    max_depth: 6
+    subsample: 0.8
+  tuning:
+    cv_folds: 5
+    param_grid:
+      reg__max_iter: [400, 600, 800]
+      reg__learning_rate: [0.02, 0.03]
+      reg__max_depth: [7, 8, 10]
+      reg__l2_regularization: [0.1, 1.0, 5.0]
+
+app:
+  server_port: 8501
+  default_mae: 57.39
+
+api:
+  host: "0.0.0.0"
+  port: 8000
