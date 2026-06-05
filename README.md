@@ -251,11 +251,11 @@ curl -X POST http://localhost:8000/batch_predict \
 
 ## Dashboard Tabs
 
-1. ** Price Estimate** — Predict a phone's market value with confidence interval, deal score, and comparable listings. Use "All" storage for full market breakdown.
-2. ** Market Analysis** — Interactive Plotly charts: price distribution, series breakdown, condition analysis.
-3. ** Trade-In Calculator** — Estimate upgrade options when trading in your current phone.
-4. ** Brand Comparison** — Side-by-side value retention comparison across brands.
-5. ** My Listing Analyzer** — Paste a raw Arabic listing title and get automatic brand/series/storage/condition extraction + predicted price + deal score.
+1. ** Price Estimate  ** — Predict a phone's market value with confidence interval, deal score, and comparable listings. Use "All" storage for full market breakdown.
+2. ** Market Analysis ** — Interactive Plotly charts: price distribution, series breakdown, condition analysis.
+3. ** Trade-In Calculator ** — Estimate upgrade options when trading in your current phone.
+4. ** Brand Comparison ** — Side-by-side value retention comparison across brands.
+5. ** My Listing Analyzer ** — Paste a raw Arabic listing title and get automatic brand/series/storage/condition extraction + predicted price + deal score.
 
 ---
 
